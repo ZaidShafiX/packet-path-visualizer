@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
+import Globe from "globe.gl";
 
 const TARGETS = [
   { id: "google",     label: "🌐 Google DNS (8.8.8.8)" },
@@ -11,19 +10,64 @@ const TARGETS = [
 ];
 
 export default function App() {
-  const mapRef    = useRef(null);
-  const mapDivRef = useRef(null);
+  const globeDivRef = useRef(null);
+  const globeRef    = useRef(null);
   const [hops, setHops]       = useState([]);
   const [status, setStatus]   = useState("Pick a destination and hit Start Trace");
   const [tracing, setTracing] = useState(false);
   const [target, setTarget]   = useState("google");
 
+  // Points and arcs stored in refs so globe can read latest values
+  const pointsRef = useRef([]);
+  const arcsRef   = useRef([]);
+
   useEffect(() => {
-    if (mapRef.current) return;
-    mapRef.current = L.map(mapDivRef.current, { center: [30, 30], zoom: 2 });
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap contributors",
-    }).addTo(mapRef.current);
+    // Initialize the globe once
+    const globe = Globe()(globeDivRef.current);
+
+    globe
+      .globeImageUrl("//unpkg.com/three-globe/example/img/earth-night.jpg")
+      .backgroundImageUrl("//unpkg.com/three-globe/example/img/night-sky.png")
+      .atmosphereColor("#1a8cff")
+      .atmosphereAltitude(0.15)
+      // Points (hop dots)
+      .pointsData([])
+      .pointLat("lat")
+      .pointLng("lng")
+      .pointColor(() => "#00ff88")
+      .pointAltitude(0.01)
+      .pointRadius(0.4)
+      .pointLabel(d => `<div style="background:#0d1117;color:#00ff88;padding:6px 10px;border-radius:6px;font-family:monospace;font-size:12px;border:1px solid #00ff88">
+        <b>Hop ${d.hop}</b><br/>${d.city}<br/><span style="color:#8b949e">${d.ip || ""}</span>
+      </div>`)
+      // Arcs (curved paths between hops)
+      .arcsData([])
+      .arcStartLat("startLat")
+      .arcStartLng("startLng")
+      .arcEndLat("endLat")
+      .arcEndLng("endLng")
+      .arcColor(() => "#00ff88")
+      .arcAltitude(0.3)
+      .arcStroke(0.5)
+      .arcDashLength(0.4)
+      .arcDashGap(0.2)
+      .arcDashAnimateTime(1500);
+
+    // Size globe to fill container
+    globe.width(globeDivRef.current.clientWidth);
+    globe.height(globeDivRef.current.clientHeight);
+
+    // Start with a nice view angle
+    globe.pointOfView({ lat: 30, lng: 50, altitude: 2 }, 0);
+
+    globeRef.current = globe;
+
+    const handleResize = () => {
+      globe.width(globeDivRef.current.clientWidth);
+      globe.height(globeDivRef.current.clientHeight);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   const startTrace = () => {
@@ -32,12 +76,11 @@ export default function App() {
     setHops([]);
     setStatus("Tracing...");
 
-    // Clear old markers and lines
-    mapRef.current.eachLayer((layer) => {
-      if (layer instanceof L.CircleMarker || layer instanceof L.Polyline) {
-        mapRef.current.removeLayer(layer);
-      }
-    });
+    // Clear previous data
+    pointsRef.current = [];
+    arcsRef.current   = [];
+    globeRef.current.pointsData([]);
+    globeRef.current.arcsData([]);
 
     const ws = new WebSocket(`ws://localhost:8000/trace?target=${target}`);
     const collectedHops = [];
@@ -62,29 +105,33 @@ export default function App() {
       collectedHops.push(data);
       setHops([...collectedHops]);
 
-      // Only draw on map if we have real coordinates
       if (!data.timeout && data.lat && data.lng) {
-        L.circleMarker([data.lat, data.lng], {
-          radius: 7,
-          color: "#00ff88",
-          fillColor: "#00ff88",
-          fillOpacity: 0.9,
-        })
-          .bindTooltip(`Hop ${data.hop}: ${data.city}`, { permanent: false })
-          .addTo(mapRef.current);
+        // Add point for this hop
+        pointsRef.current = [...pointsRef.current, data];
+        globeRef.current.pointsData(pointsRef.current);
 
-        // Draw line from previous located hop to this one
+        // Find previous located hop and draw an arc
         const prevLocated = collectedHops
           .slice(0, -1)
           .reverse()
           .find(h => !h.timeout && h.lat);
 
         if (prevLocated) {
-          L.polyline(
-            [[prevLocated.lat, prevLocated.lng], [data.lat, data.lng]],
-            { color: "#00ff88", weight: 2, opacity: 0.7, dashArray: "6, 6" }
-          ).addTo(mapRef.current);
+          const arc = {
+            startLat: prevLocated.lat,
+            startLng: prevLocated.lng,
+            endLat:   data.lat,
+            endLng:   data.lng,
+          };
+          arcsRef.current = [...arcsRef.current, arc];
+          globeRef.current.arcsData(arcsRef.current);
         }
+
+        // Smoothly rotate the globe to show the new hop
+        globeRef.current.pointOfView(
+          { lat: data.lat, lng: data.lng, altitude: 2 },
+          1000  // 1 second transition
+        );
       }
     };
 
@@ -95,16 +142,32 @@ export default function App() {
   };
 
   return (
-    <div style={{ fontFamily: "monospace", background: "#0d1117", minHeight: "100vh", color: "#c9d1d9" }}>
+    <div style={{ fontFamily: "'Courier New', monospace", background: "#0d1117", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Header */}
-      <div style={{ padding: "12px 24px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontSize: "16px", color: "#58a6ff" }}>🌐 Packet Path Visualizer</h1>
+      <div style={{
+        padding: "12px 24px",
+        borderBottom: "1px solid #21262d",
+        display: "flex",
+        alignItems: "center",
+        gap: "12px",
+        flexWrap: "wrap",
+        background: "#0d1117",
+        zIndex: 10,
+        flexShrink: 0,
+      }}>
+        <h1 style={{ margin: 0, fontSize: "15px", color: "#58a6ff", letterSpacing: "0.08em" }}>
+          🌐 PACKET PATH VISUALIZER
+        </h1>
 
         <select
           value={target}
           onChange={e => setTarget(e.target.value)}
           disabled={tracing}
-          style={{ background: "#161b22", color: "#c9d1d9", border: "1px solid #30363d", borderRadius: "6px", padding: "6px 10px", fontSize: "13px" }}
+          style={{
+            background: "#161b22", color: "#c9d1d9",
+            border: "1px solid #30363d", borderRadius: "6px",
+            padding: "6px 10px", fontSize: "13px", cursor: "pointer",
+          }}
         >
           {TARGETS.map(t => (
             <option key={t.id} value={t.id}>{t.label}</option>
@@ -117,23 +180,29 @@ export default function App() {
           style={{
             background: tracing ? "#21262d" : "#238636",
             color: "#fff", border: "none", borderRadius: "6px",
-            padding: "8px 16px", cursor: tracing ? "not-allowed" : "pointer", fontSize: "13px",
+            padding: "8px 18px", cursor: tracing ? "not-allowed" : "pointer",
+            fontSize: "13px", fontFamily: "inherit",
           }}
         >
-          {tracing ? "Tracing..." : "▶ Start Trace"}
+          {tracing ? "▶ Tracing..." : "▶ Start Trace"}
         </button>
 
         <span style={{ fontSize: "12px", color: "#8b949e" }}>{status}</span>
       </div>
 
-      {/* Map */}
-      <div ref={mapDivRef} style={{ height: "calc(100vh - 100px)", width: "100%" }} />
+      {/* Globe */}
+      <div ref={globeDivRef} style={{ flex: 1, width: "100%" }} />
 
-      {/* Hop list at bottom */}
-      <div style={{ padding: "6px 24px", borderTop: "1px solid #21262d", display: "flex", gap: "16px", flexWrap: "wrap", background: "#0d1117" }}>
+      {/* Hop list */}
+      <div style={{
+        padding: "6px 24px",
+        borderTop: "1px solid #21262d",
+        display: "flex", gap: "16px", flexWrap: "wrap",
+        background: "#0d1117", flexShrink: 0, minHeight: "32px",
+      }}>
         {hops.map((h) => (
-          <span key={h.hop} style={{ fontSize: "11px", color: h.timeout ? "#6e7681" : "#00ff88" }}>
-            Hop {h.hop}: {h.city}
+          <span key={h.hop} style={{ fontSize: "11px", color: h.timeout ? "#3d444d" : "#00ff88" }}>
+            {h.timeout ? `✗ Hop ${h.hop}` : `✓ Hop ${h.hop}: ${h.city}`}
           </span>
         ))}
       </div>
