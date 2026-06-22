@@ -1,0 +1,6 @@
+node_modules/
+backend/venv/
+backend/*.mmdb
+__pyache__/
+*.pyc
+.env
