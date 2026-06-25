@@ -4,3 +4,4 @@ backend/*.mmdb
 __pyache__/
 *.pyc
 .env
+repomix-output.xml
