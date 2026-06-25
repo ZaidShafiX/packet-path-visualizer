@@ -1,5 +1,8 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 import asyncio
 import re
 import json
@@ -9,12 +12,26 @@ import geoip2.database
 
 app = FastAPI()
 
+# ── CORS — open for local + ngrok dev ────────────────────────────────────────
+# WebSocket connections don't go through CORS, but the Fetch/XHR calls from
+# the browser (e.g. future REST endpoints) do. Keep this permissive for dev.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],          # tighten to your ngrok URL in production
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Ngrok browser-warning bypass ─────────────────────────────────────────────
+# When you open an ngrok URL in a new browser, ngrok shows an interstitial
+# warning page. This header tells ngrok to skip it for API/WS requests.
+class NgrokHeaderMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["ngrok-skip-browser-warning"] = "true"
+        return response
+
+app.add_middleware(NgrokHeaderMiddleware)
 
 GEOIP_DB = "backend/GeoLite2-City.mmdb"
 
@@ -118,7 +135,6 @@ async def trace(websocket: WebSocket, target: str = "google"):
 async def trace_ip(websocket: WebSocket, ip: str = ""):
     """V2: Trace to a specific IP (the peer's IP from WebRTC)."""
     await websocket.accept()
-    # Validate it's a real public IPv4 — never trust raw input
     if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', ip):
         await websocket.send_text(json.dumps({"error": "Invalid IP format"}))
         return
@@ -139,7 +155,6 @@ async def signal(websocket: WebSocket, room: str = None, role: str = "host"):
 
     try:
         if role == "host":
-            # Create a new room with a unique code
             code = generate_room_code()
             while code in rooms:
                 code = generate_room_code()
@@ -148,7 +163,6 @@ async def signal(websocket: WebSocket, room: str = None, role: str = "host"):
             print(f"Room {code} created")
             await websocket.send_text(json.dumps({"type": "room_created", "room": code}))
 
-            # Relay everything the host sends → to the guest
             while True:
                 data = await websocket.receive_text()
                 if current_room in rooms and rooms[current_room]["guest"]:
@@ -171,11 +185,9 @@ async def signal(websocket: WebSocket, room: str = None, role: str = "host"):
             current_room = room
             print(f"Guest joined room {room}")
 
-            # Tell both sides the room is ready
             await rooms[room]["host"].send_text(json.dumps({"type": "guest_joined"}))
             await websocket.send_text(json.dumps({"type": "joined", "room": room}))
 
-            # Relay everything the guest sends → to the host
             while True:
                 data = await websocket.receive_text()
                 if current_room in rooms and rooms[current_room]["host"]:
@@ -183,7 +195,6 @@ async def signal(websocket: WebSocket, room: str = None, role: str = "host"):
 
     except WebSocketDisconnect:
         if current_room and current_room in rooms:
-            # Notify the other peer that their partner left
             other = None
             if role == "host":
                 other = rooms[current_room].get("guest")
@@ -201,3 +212,9 @@ async def signal(websocket: WebSocket, room: str = None, role: str = "host"):
         print(f"Signal error: {e}")
         if current_room and current_room in rooms:
             del rooms[current_room]
+
+app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str):
+    return FileResponse("frontend/dist/index.html")

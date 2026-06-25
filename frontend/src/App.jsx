@@ -3,6 +3,10 @@ import Globe from "globe.gl";
 import { useFileTransfer } from "./hooks/useFileTransfer";
 import "./App.css";
 
+const BACKEND_WS = window.location.hostname === "localhost"
+  ? "ws://localhost:8000"
+  : `wss://${window.location.host}`;
+
 const TARGETS = [
   { id: "google",     label: "🌐 Google DNS (8.8.8.8)" },
   { id: "cloudflare", label: "⚡ Cloudflare DNS (1.1.1.1)" },
@@ -18,21 +22,24 @@ function formatBytes(bytes) {
 }
 
 export default function App() {
-  const globeDivRef = useRef(null);
-  const globeRef    = useRef(null);
-  const pointsRef   = useRef([]);
-  const arcsRef     = useRef([]);
-  const tracingRef  = useRef(false); // ref so V2 callback always sees current value
+  const globeDivRef    = useRef(null);
+  const globeRef       = useRef(null);
+  const pointsRef      = useRef([]);
+  const arcsRef        = useRef([]);
+  const tracingRef     = useRef(false);
+  const relayHopRef    = useRef(null);   // always points to transfer.relayTraceHop
+  const roleRef        = useRef(null);   // always points to transfer.role
+  const relayedHopsRef = useRef([]);     // hops received from host (guest side)
 
-  const [hops, setHops]       = useState([]);
-  const [traceStatus, setTraceStatus] = useState("Pick a destination and hit Start Trace");
-  const [tracing, setTracing] = useState(false);
-  const [target, setTarget]   = useState("google");
-  const [tab, setTab]         = useState("trace");
-  const [joinCode, setJoinCode] = useState("");
+  const [hops, setHops]               = useState([]);
+  const [traceStatus, setTraceStatus] = useState("Select a destination and start a trace");
+  const [tracing, setTracing]         = useState(false);
+  const [target, setTarget]           = useState("google");
+  const [tab, setTab]                 = useState("trace");
+  const [joinCode, setJoinCode]       = useState("");
   const fileInputRef = useRef(null);
 
-  // ── Globe init ────────────────────────────────────────────────────────────
+  // ── Globe init ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (globeRef.current) return;
     const g = Globe()(globeDivRef.current);
@@ -40,10 +47,10 @@ export default function App() {
      .backgroundImageUrl("//unpkg.com/three-globe/example/img/night-sky.png")
      .atmosphereColor("#1a8cff").atmosphereAltitude(0.15)
      .pointsData([]).pointLat("lat").pointLng("lng")
-     .pointColor(() => "#00ff88").pointAltitude(0.01).pointRadius(0.4)
-     .pointLabel(d => `<div style="background:#0d1117;color:#00ff88;padding:6px 10px;border-radius:6px;font-family:monospace;font-size:12px;border:1px solid #21262d"><b>Hop ${d.hop}</b><br/>${d.city}<br/><span style="color:#8b949e">${d.ip||""}</span></div>`)
+     .pointColor(() => "#3b82f6").pointAltitude(0.01).pointRadius(0.4)
+     .pointLabel(d => `<div style="background:#111827;color:#e2e8f0;padding:8px 12px;border-radius:8px;font-family:-apple-system,sans-serif;font-size:12px;border:1px solid #1e293b;line-height:1.5"><b style="color:#60a5fa">Hop ${d.hop}</b><br/>${d.city}<br/><span style="color:#64748b;font-family:monospace">${d.ip||""}</span></div>`)
      .arcsData([]).arcStartLat("startLat").arcStartLng("startLng").arcEndLat("endLat").arcEndLng("endLng")
-     .arcColor(() => "#00ff88").arcAltitude(0.3).arcStroke(0.5)
+     .arcColor(() => "#3b82f6").arcAltitude(0.3).arcStroke(0.5)
      .arcDashLength(0.4).arcDashGap(0.2).arcDashAnimateTime(1500);
     g.width(globeDivRef.current.clientWidth);
     g.height(globeDivRef.current.clientHeight);
@@ -58,9 +65,8 @@ export default function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // ── Shared traceroute runner — V1 uses curated targets, V2 uses peer IP ──
+  // ── Shared traceroute runner ───────────────────────────────────────────────
   const runTrace = useCallback((wsUrl, label) => {
-    // Force-stop any existing trace so V2 can always trigger cleanly
     tracingRef.current = true;
     setTracing(true);
     setHops([]);
@@ -69,6 +75,9 @@ export default function App() {
     arcsRef.current   = [];
     globeRef.current?.pointsData([]);
     globeRef.current?.arcsData([]);
+
+    // Tell the guest to clear their globe and prepare for incoming hops
+    relayHopRef.current?.({ reset: true });
 
     const ws = new WebSocket(wsUrl);
     const collected = [];
@@ -86,6 +95,8 @@ export default function App() {
         const located = collected.filter(h => !h.timeout).length;
         setTraceStatus(`Trace complete — ${collected.length} hops, ${located} located`);
         setTracing(false); tracingRef.current = false;
+        // Tell guest trace is finished
+        relayHopRef.current?.({ done: true, total: collected.length, located });
         ws.close();
         return;
       }
@@ -93,13 +104,19 @@ export default function App() {
       collected.push(data);
       setHops([...collected]);
 
+      // Relay every hop to the guest so their globe draws the same path
+      relayHopRef.current?.(data);
+
       if (!data.timeout && data.lat && data.lng) {
         pointsRef.current = [...pointsRef.current, data];
         globeRef.current?.pointsData(pointsRef.current);
 
         const prev = collected.slice(0, -1).reverse().find(h => !h.timeout && h.lat);
         if (prev) {
-          arcsRef.current = [...arcsRef.current, { startLat: prev.lat, startLng: prev.lng, endLat: data.lat, endLng: data.lng }];
+          arcsRef.current = [...arcsRef.current, {
+            startLat: prev.lat, startLng: prev.lng,
+            endLat: data.lat,   endLng: data.lng,
+          }];
           globeRef.current?.arcsData(arcsRef.current);
         }
 
@@ -113,17 +130,66 @@ export default function App() {
     };
   }, []);
 
-  const startTrace    = () => runTrace(`ws://localhost:8000/trace?target=${target}`);
+  const startTrace = () => runTrace(`${BACKEND_WS}/trace?target=${target}`);
 
-  // Called automatically when WebRTC discovers the peer's real public IP
+  // Host traces to peer IP. Guest skips own trace — they see it via relay.
   const startTraceToIP = useCallback((ip) => {
-    runTrace(`ws://localhost:8000/trace-ip?ip=${ip}`, `📡 Tracing path to your friend (${ip})...`);
-    // Switch to trace tab so the user sees the globe animate
+    if (roleRef.current === "guest") {
+      setTraceStatus("Receiving route trace from host...");
+      setTab("trace");
+      return;
+    }
+    runTrace(`${BACKEND_WS}/trace-ip?ip=${ip}`, `Tracing path to peer (${ip})...`);
     setTab("trace");
   }, [runTrace]);
 
-  // ── WebRTC file transfer — trace auto-fires when peer IP is found ─────────
-  const transfer = useFileTransfer({ onPeerIpDiscovered: startTraceToIP });
+  // Renders hops that arrived via data channel relay (guest side)
+  const handleRelayedHop = useCallback((data) => {
+    if (data.reset) {
+      relayedHopsRef.current = [];
+      pointsRef.current = [];
+      arcsRef.current   = [];
+      globeRef.current?.pointsData([]);
+      globeRef.current?.arcsData([]);
+      setHops([]);
+      setTraceStatus("Receiving route trace from host...");
+      setTab("trace");
+      return;
+    }
+
+    if (data.done) {
+      setTraceStatus(`Trace complete — ${data.total} hops, ${data.located} located`);
+      return;
+    }
+
+    relayedHopsRef.current = [...relayedHopsRef.current, data];
+    setHops([...relayedHopsRef.current]);
+
+    if (!data.timeout && data.lat && data.lng) {
+      pointsRef.current = [...pointsRef.current, data];
+      globeRef.current?.pointsData(pointsRef.current);
+
+      const prev = relayedHopsRef.current.slice(0, -1).reverse().find(h => !h.timeout && h.lat);
+      if (prev) {
+        arcsRef.current = [...arcsRef.current, {
+          startLat: prev.lat, startLng: prev.lng,
+          endLat: data.lat,   endLng: data.lng,
+        }];
+        globeRef.current?.arcsData(arcsRef.current);
+      }
+
+      globeRef.current?.pointOfView({ lat: data.lat, lng: data.lng, altitude: 2 }, 1000);
+    }
+  }, []);
+
+  const transfer = useFileTransfer({
+    onPeerIpDiscovered: startTraceToIP,
+    onTraceHop: handleRelayedHop,
+  });
+
+  // Keep refs in sync every render so runTrace closures always see fresh values
+  relayHopRef.current = transfer.relayTraceHop;
+  roleRef.current     = transfer.role;
 
   const handlePickFile = (e) => {
     const file = e.target.files[0];
@@ -131,103 +197,168 @@ export default function App() {
     e.target.value = "";
   };
 
+  // ── Render (UI unchanged) ──────────────────────────────────────────────────
   return (
-    <div style={{ fontFamily: "'Courier New', monospace", background: "#0d1117", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div className="app-container">
 
-      {/* Header */}
-      <div style={{ padding: "12px 24px", borderBottom: "1px solid #21262d", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap", background: "#0d1117", flexShrink: 0 }}>
-        <h1 style={{ margin: 0, fontSize: "15px", color: "#58a6ff", letterSpacing: "0.08em" }}>🌐 PACKET PATH VISUALIZER</h1>
+      <div className="globe-section">
+        <div ref={globeDivRef} className="globe-canvas" />
 
-        <div className="tab-bar">
-          <button className={`tab ${tab === "trace"    ? "active" : ""}`} onClick={() => setTab("trace")}>Trace</button>
-          <button className={`tab ${tab === "transfer" ? "active" : ""}`} onClick={() => setTab("transfer")}>Send to Friend</button>
-        </div>
-
-        {/* V1 trace controls */}
-        {tab === "trace" && (<>
-          <select value={target} onChange={e => setTarget(e.target.value)} disabled={tracing}
-            style={{ background: "#161b22", color: "#c9d1d9", border: "1px solid #30363d", borderRadius: "6px", padding: "6px 10px", fontSize: "13px" }}>
-            {TARGETS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-          </select>
-          <button onClick={startTrace} disabled={tracing} style={{
-            background: tracing ? "#21262d" : "#238636", color: "#fff", border: "none",
-            borderRadius: "6px", padding: "8px 18px", cursor: tracing ? "not-allowed" : "pointer",
-            fontSize: "13px", fontFamily: "inherit",
-          }}>
-            {tracing ? "▶ Tracing..." : "▶ Start Trace"}
-          </button>
-          <span style={{ fontSize: "12px", color: "#8b949e" }}>{traceStatus}</span>
-        </>)}
-
-        {/* V2 transfer controls */}
-        {tab === "transfer" && (
-          <div className="transfer-bar">
-            {/* Not yet in a room */}
-            {transfer.role === null && (<>
-              <button className="btn-primary" onClick={transfer.hostTransfer}>📡 Host a Transfer</button>
-              <input className="room-input" placeholder="ROOM CODE" maxLength={6}
-                value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} />
-              <button className="btn-secondary" disabled={joinCode.length !== 6}
-                onClick={() => transfer.joinTransfer(joinCode)}>🔗 Join</button>
-            </>)}
-
-            {/* Host waiting for guest — show the room code prominently */}
-            {transfer.role === "host" && transfer.connState === "waiting" && transfer.roomCode && (
-              <span className="room-code">Share this code: <b>{transfer.roomCode}</b></span>
+        {(transfer.sendProgress !== null || transfer.receiveProgress !== null) && (
+          <div className="transfer-panel">
+            {transfer.sendProgress !== null && (
+              <div className="progress-row">
+                <span className="progress-label">Sending</span>
+                <div className="progress-bar">
+                  <div className="progress-fill" style={{ width: `${transfer.sendProgress}%` }} />
+                </div>
+                <span className="progress-pct">{transfer.sendProgress}%</span>
+              </div>
             )}
-
-            {/* Both sides connected — host can pick a file */}
-            {transfer.connState === "connected" && (<>
-              <input ref={fileInputRef} type="file" hidden onChange={handlePickFile} />
-              {transfer.role === "host" && (
-                <button className="btn-primary" onClick={() => fileInputRef.current.click()}>📤 Choose File to Send</button>
-              )}
-              {transfer.peerIp && <span className="peer-ip">Peer: {transfer.peerIp}</span>}
-            </>)}
-
-            {transfer.role && <button className="btn-ghost" onClick={transfer.reset}>✕ Reset</button>}
-
-            <span style={{ fontSize: "12px", color: "#8b949e" }}>{transfer.statusText}</span>
+            {transfer.receiveProgress !== null && (
+              <div className="progress-row">
+                <span className="progress-label">Receiving</span>
+                <div className="progress-bar">
+                  <div className="progress-fill" style={{ width: `${transfer.receiveProgress}%` }} />
+                </div>
+                <span className="progress-pct">{transfer.receiveProgress}%</span>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* Globe — always visible */}
-      <div ref={globeDivRef} style={{ flex: 1, width: "100%" }} />
+      <div className="sidebar">
+        <div className="sidebar-header">
+          <div className="app-title">
+            <div className="app-title-icon">🌐</div>
+            <span className="app-title-text">Packet Path Visualizer</span>
+            <span className="app-title-badge">LIVE</span>
+          </div>
+          <div className="tab-bar">
+            <button className={`tab ${tab === "trace"    ? "active" : ""}`} onClick={() => setTab("trace")}>Route Trace</button>
+            <button className={`tab ${tab === "transfer" ? "active" : ""}`} onClick={() => setTab("transfer")}>Send to Friend</button>
+          </div>
+        </div>
 
-      {/* Transfer progress overlay — shows above hop list during transfers */}
-      {(transfer.sendProgress !== null || transfer.receiveProgress !== null || transfer.incomingFile) && (
-        <div className="transfer-panel">
-          {transfer.sendProgress !== null && (
-            <div className="progress-row">
-              <span>Sending...</span>
-              <div className="progress-bar"><div className="progress-fill" style={{ width: `${transfer.sendProgress}%` }} /></div>
-              <span>{transfer.sendProgress}%</span>
-            </div>
+        <div className="control-panel">
+          {tab === "trace" && (
+            <>
+              <div className="control-panel-label">Destination</div>
+              <div className="control-row">
+                <select className="select-target" value={target} onChange={e => setTarget(e.target.value)} disabled={tracing}>
+                  {TARGETS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                </select>
+                <button className="btn-primary" onClick={startTrace} disabled={tracing}>
+                  {tracing ? "Tracing…" : "▶ Start"}
+                </button>
+              </div>
+              <div className="status-line">{traceStatus}</div>
+            </>
           )}
-          {transfer.receiveProgress !== null && (
-            <div className="progress-row">
-              <span>Receiving...</span>
-              <div className="progress-bar"><div className="progress-fill" style={{ width: `${transfer.receiveProgress}%` }} /></div>
-              <span>{transfer.receiveProgress}%</span>
-            </div>
-          )}
-          {transfer.incomingFile && (
-            <div className="progress-row">
-              <span>✓ {transfer.incomingFile.name} ({formatBytes(transfer.incomingFile.size)})</span>
-              <a className="btn-secondary" href={transfer.incomingFile.url} download={transfer.incomingFile.name}>⬇ Download</a>
-            </div>
+
+          {tab === "transfer" && (
+            <>
+              {transfer.role === null && (
+                <>
+                  <div className="control-panel-label">Start or Join</div>
+                  <div className="control-row">
+                    <button className="btn-primary" onClick={transfer.hostTransfer}>📡 Host Transfer</button>
+                    <input className="room-input" placeholder="ROOM CODE" maxLength={6}
+                      value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} />
+                    <button className="btn-secondary" disabled={joinCode.length !== 6}
+                      onClick={() => transfer.joinTransfer(joinCode)}>Join</button>
+                  </div>
+                </>
+              )}
+
+              {transfer.role === "host" && transfer.connState === "waiting" && transfer.roomCode && (
+                <>
+                  <div className="control-panel-label">Your Room Code</div>
+                  <div className="room-code-display">
+                    <span className="room-code-value">{transfer.roomCode}</span>
+                  </div>
+                </>
+              )}
+
+              {transfer.connState === "connected" && (
+                <>
+                  <div className="control-panel-label">Connected</div>
+                  <div className="control-row">
+                    {transfer.role === "host" && (
+                      <>
+                        <input ref={fileInputRef} type="file" hidden onChange={handlePickFile} />
+                        <button className="btn-primary" onClick={() => fileInputRef.current.click()}>📤 Choose File</button>
+                      </>
+                    )}
+                    {transfer.peerIp && (
+                      <span className="peer-ip-badge">
+                        <span className="peer-ip-dot" />
+                        {transfer.peerIp}
+                      </span>
+                    )}
+                    <button className="btn-ghost" onClick={transfer.reset}>✕ Reset</button>
+                  </div>
+                </>
+              )}
+
+              {transfer.incomingFile && (
+                <div style={{ marginTop: "10px" }}>
+                  <a className="btn-download" href={transfer.incomingFile.url} download={transfer.incomingFile.name}>
+                    ⬇ {transfer.incomingFile.name} ({formatBytes(transfer.incomingFile.size)})
+                  </a>
+                </div>
+              )}
+
+              {transfer.role && transfer.connState !== "connected" && (
+                <div style={{ marginTop: "10px" }}>
+                  <button className="btn-ghost" onClick={transfer.reset}>✕ Reset</button>
+                </div>
+              )}
+
+              <div className="status-line">{transfer.statusText}</div>
+            </>
           )}
         </div>
-      )}
 
-      {/* Hop list footer */}
-      <div style={{ padding: "6px 24px", borderTop: "1px solid #21262d", display: "flex", gap: "16px", flexWrap: "wrap", background: "#0d1117", flexShrink: 0, minHeight: "32px" }}>
-        {hops.map(h => (
-          <span key={h.hop} style={{ fontSize: "11px", color: h.timeout ? "#3d444d" : "#00ff88" }}>
-            {h.timeout ? `✗ Hop ${h.hop}` : `✓ Hop ${h.hop}: ${h.city}`}
-          </span>
-        ))}
+        <div className="hop-log">
+          {hops.length === 0 ? (
+            <div className="hop-log-empty">
+              <span className="hop-log-empty-icon">📡</span>
+              <span>No hops yet. Start a trace to see the network path.</span>
+            </div>
+          ) : (
+            <>
+              <div className="hop-log-header">
+                <span className="hop-log-title">Network Path</span>
+                <div className="hop-log-rule" />
+                <span className="hop-count-badge">{hops.length} hops</span>
+              </div>
+              {hops.map(h => (
+                <div key={h.hop} className={`hop-card ${h.timeout ? "hop-warn" : "hop-ok"}`}>
+                  <span className="hop-number">{h.hop}</span>
+                  <div className="hop-info">
+                    {h.timeout ? (
+                      <>
+                        <div className="hop-city" style={{ color: "#94a3b8" }}>Unknown</div>
+                        <div className="hop-ip">No response</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="hop-city">{h.city}</div>
+                        {h.ip && <div className="hop-ip">{h.ip}</div>}
+                      </>
+                    )}
+                  </div>
+                  {h.timeout
+                    ? <span className="hop-status-warn">TIMEOUT</span>
+                    : <span className="hop-status-ok">OK</span>
+                  }
+                </div>
+              ))}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

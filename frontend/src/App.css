@@ -1,144 +1,51 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* ── Reset & base ──────────────────────────────────────────────────────────── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 
 body {
-  font-family: 'Courier New', monospace;
-  background: #0d1117;
-  color: #c9d1d9;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
   overflow: hidden;
 }
 
-/* ── Tab bar in header ────────────────────────────────────────────────── */
-.tab-bar {
+/* ── Root layout: 65 / 35 split ────────────────────────────────────────────── */
+.app-container {
   display: flex;
-  gap: 4px;
-  background: #161b22;
-  border-radius: 6px;
-  padding: 3px;
+  flex-direction: row;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
 }
 
-.tab {
-  background: transparent;
-  color: #8b949e;
-  border: none;
-  border-radius: 4px;
-  padding: 5px 14px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12px;
-  transition: all 0.15s;
+/* ── Globe section (left 65%) ─────────────────────────────────────────────── */
+.globe-section {
+  position: relative;
+  width: 65%;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: #0a0f1e;
 }
 
-.tab.active {
-  background: #21262d;
-  color: #58a6ff;
+.globe-section .globe-canvas {
+  width: 100%;
+  height: 100%;
 }
 
-/* ── Transfer controls row in header ─────────────────────────────────── */
-.transfer-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-/* ── Buttons ──────────────────────────────────────────────────────────── */
-.btn-primary {
-  background: #238636;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 7px 14px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.btn-primary:disabled {
-  background: #21262d;
-  cursor: not-allowed;
-}
-
-.btn-secondary {
-  background: #1f6feb;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 7px 14px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12px;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.btn-secondary:disabled {
-  background: #21262d;
-  cursor: not-allowed;
-}
-
-.btn-ghost {
-  background: transparent;
-  color: #6e7681;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  padding: 7px 12px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12px;
-}
-
-.btn-ghost:hover { color: #c9d1d9; border-color: #6e7681; }
-
-/* ── Room code input ──────────────────────────────────────────────────── */
-.room-input {
-  background: #161b22;
-  color: #00ff88;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  padding: 7px 12px;
-  font-family: inherit;
-  font-size: 14px;
-  letter-spacing: 0.25em;
-  text-transform: uppercase;
-  width: 130px;
-  text-align: center;
-}
-
-.room-input::placeholder { color: #3d444d; letter-spacing: 0.1em; }
-
-/* ── Room code display ────────────────────────────────────────────────── */
-.room-code {
-  font-size: 12px;
-  color: #8b949e;
-}
-
-.room-code b {
-  color: #00ff88;
-  font-size: 15px;
-  letter-spacing: 0.2em;
-}
-
-/* ── Peer IP badge ────────────────────────────────────────────────────── */
-.peer-ip {
-  font-size: 11px;
-  color: #8b949e;
-  background: #161b22;
-  border: 1px solid #21262d;
-  border-radius: 4px;
-  padding: 4px 8px;
-}
-
-/* ── Transfer progress panel (bottom overlay above hop list) ──────────── */
+/* Transfer progress overlay — floats at bottom of globe pane */
 .transfer-panel {
-  background: rgba(13, 17, 23, 0.95);
-  border-top: 1px solid #21262d;
-  padding: 10px 24px;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(15, 23, 42, 0.88);
+  border-top: 1px solid #1e293b;
+  backdrop-filter: blur(8px);
+  padding: 12px 20px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
-  backdrop-filter: blur(6px);
+  gap: 10px;
 }
 
 .progress-row {
@@ -146,20 +53,495 @@ body {
   align-items: center;
   gap: 12px;
   font-size: 12px;
-  color: #8b949e;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.progress-label {
+  width: 76px;
+  flex-shrink: 0;
+  color: #cbd5e1;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .progress-bar {
   flex: 1;
-  height: 6px;
-  background: #21262d;
+  height: 5px;
+  background: #1e293b;
   border-radius: 3px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: #00ff88;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
   border-radius: 3px;
-  transition: width 0.2s ease;
+  transition: width 0.25s ease;
+}
+
+.progress-pct {
+  width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #60a5fa;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ── Sidebar (right 35%) ──────────────────────────────────────────────────── */
+.sidebar {
+  width: 35%;
+  display: flex;
+  flex-direction: column;
+  background: #0f172a;
+  border-left: 1px solid #1e293b;
+  overflow: hidden;
+}
+
+/* ── Sidebar header ───────────────────────────────────────────────────────── */
+.sidebar-header {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+
+.app-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.app-title-icon {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #1d4ed8 0%, #3b82f6 100%);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.app-title-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f1f5f9;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.app-title-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  color: #3b82f6;
+  background: rgba(59,130,246,0.12);
+  border: 1px solid rgba(59,130,246,0.25);
+  border-radius: 4px;
+  padding: 2px 7px;
+  letter-spacing: 0.05em;
+}
+
+/* ── Tab bar ──────────────────────────────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  gap: 2px;
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.tab {
+  flex: 1;
+  background: transparent;
+  color: #64748b;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.tab:hover:not(.active) {
+  color: #94a3b8;
+  background: rgba(255,255,255,0.04);
+}
+
+.tab.active {
+  background: #0f172a;
+  color: #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+
+/* ── Control panel ────────────────────────────────────────────────────────── */
+.control-panel {
+  padding: 16px 20px;
+  border-bottom: 1px solid #1e293b;
+  background: #111827;
+  flex-shrink: 0;
+}
+
+.control-panel-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #475569;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Status line below controls */
+.status-line {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+/* ── Select ───────────────────────────────────────────────────────────────── */
+.select-target {
+  flex: 1;
+  min-width: 0;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.select-target:focus {
+  border-color: #3b82f6;
+}
+
+.select-target:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.btn-primary:hover:not(:disabled) { background: #3b82f6; }
+
+.btn-primary:disabled {
+  background: #1e293b;
+  color: #475569;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1e3a5f;
+  color: #93c5fd;
+  border: 1px solid #1d4ed8;
+  border-radius: 7px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.btn-secondary:hover:not(:disabled) { background: #1d4ed8; color: #fff; }
+
+.btn-secondary:disabled {
+  background: #1e293b;
+  color: #475569;
+  border-color: #334155;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  color: #64748b;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.btn-ghost:hover { color: #e2e8f0; border-color: #64748b; }
+
+/* ── Download button ─────────────────────────────────────────────────────── */
+.btn-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #0c2044;
+  color: #60a5fa;
+  border: 1px solid #1d4ed8;
+  border-radius: 7px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  animation: pulse-download 2s ease-in-out infinite;
+  transition: background 0.15s;
+}
+
+.btn-download:hover {
+  background: #1d4ed8;
+  color: #fff;
+  animation: none;
+}
+
+@keyframes pulse-download {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); }
+  50%       { box-shadow: 0 0 0 4px rgba(59,130,246,0.2); }
+}
+
+/* ── Room code input ─────────────────────────────────────────────────────── */
+.room-input {
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  width: 132px;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.room-input::placeholder { color: #334155; letter-spacing: 0.15em; font-weight: 400; }
+.room-input:focus { border-color: #3b82f6; }
+
+/* ── Room code display ───────────────────────────────────────────────────── */
+.room-code-display {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.room-code-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.room-code-value {
+  font-family: 'Courier New', monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: #60a5fa;
+  letter-spacing: 0.22em;
+}
+
+/* ── Peer IP badge ───────────────────────────────────────────────────────── */
+.peer-ip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #94a3b8;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-family: 'Courier New', monospace;
+}
+
+.peer-ip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 5px #22c55e;
+}
+
+/* ── Hop log section ─────────────────────────────────────────────────────── */
+.hop-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hop-log::-webkit-scrollbar { width: 4px; }
+.hop-log::-webkit-scrollbar-track { background: transparent; }
+.hop-log::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
+
+.hop-log-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #334155;
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.hop-log-empty-icon {
+  font-size: 28px;
+  opacity: 0.5;
+}
+
+/* ── Hop card ────────────────────────────────────────────────────────────── */
+.hop-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  transition: border-left-color 0.2s;
+  animation: hop-in 0.2s ease both;
+}
+
+@keyframes hop-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* State variants */
+.hop-card.hop-ok    { border-left-color: #0ea5e9; }
+.hop-card.hop-warn  { border-left-color: #f59e0b; }
+
+.hop-number {
+  font-size: 10px;
+  font-weight: 600;
+  color: #475569;
+  width: 20px;
+  flex-shrink: 0;
+  padding-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hop-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.hop-city {
+  font-size: 12px;
+  font-weight: 500;
+  color: #cbd5e1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hop-ip {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.hop-status-ok {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(14,165,233,0.1);
+  color: #0ea5e9;
+  font-weight: 600;
+  flex-shrink: 0;
+  align-self: center;
+  letter-spacing: 0.03em;
+}
+
+.hop-status-warn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(245,158,11,0.1);
+  color: #f59e0b;
+  font-weight: 600;
+  flex-shrink: 0;
+  align-self: center;
+  letter-spacing: 0.03em;
+}
+
+/* ── Divider label (inside hop log) ─────────────────────────────────────── */
+.hop-log-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.hop-log-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: #475569;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  flex-shrink: 0;
+}
+
+.hop-log-rule {
+  flex: 1;
+  height: 1px;
+  background: #1e293b;
+}
+
+.hop-count-badge {
+  font-size: 10px;
+  color: #334155;
+  font-variant-numeric: tabular-nums;
 }

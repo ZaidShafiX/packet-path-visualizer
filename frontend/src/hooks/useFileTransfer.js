@@ -1,6 +1,8 @@
 import { useRef, useState, useCallback } from "react";
 
-const SIGNAL_URL   = "ws://localhost:8000/signal";
+const SIGNAL_URL = window.location.hostname === "localhost"
+  ? "ws://localhost:8000/signal"
+  : `wss://${window.location.host}/signal`;
 const CHUNK_SIZE   = 16 * 1024;        // 16 KB per chunk
 const BUFFER_LIMIT = 1 * 1024 * 1024;  // pause sending above 1 MB buffered
 
@@ -8,12 +10,15 @@ const RTC_CONFIG = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    // Step 7: add TURN server here for strict-network fallback
-    // { urls: "turn:your-server:3478", username: "...", credential: "..." }
+    // Free public TURN relay (Open Relay Project) — fallback for peers behind
+    // symmetric NAT / CGNAT where STUN-only direct connections can't form.
+    { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
   ],
 };
 
-export function useFileTransfer({ onPeerIpDiscovered } = {}) {
+export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
   const [role, setRole]                   = useState(null);   // "host" | "guest"
   const [roomCode, setRoomCode]           = useState("");
   const [connState, setConnState]         = useState("idle"); // idle | waiting | connecting | connected | failed | closed
@@ -30,6 +35,8 @@ export function useFileTransfer({ onPeerIpDiscovered } = {}) {
   const recvMetaRef     = useRef(null);
   const recvBufRef      = useRef([]);
   const recvSizeRef     = useRef(0);
+  const onTraceHopRef   = useRef(onTraceHop);
+  onTraceHopRef.current = onTraceHop;
 
   // Use getStats() on the live connection — more reliable than parsing ICE strings
   const discoverPeerIp = useCallback(async (pc) => {
@@ -73,6 +80,11 @@ export function useFileTransfer({ onPeerIpDiscovered } = {}) {
     dc.onmessage = (event) => {
       if (typeof event.data === "string") {
         const msg = JSON.parse(event.data);
+
+        if (msg.type === "trace-hop") {
+          onTraceHopRef.current?.(msg.payload);
+          return;
+        }
 
         if (msg.type === "file-start") {
           recvMetaRef.current = { name: msg.name, size: msg.size, mime: msg.mime || "application/octet-stream" };
@@ -258,6 +270,13 @@ export function useFileTransfer({ onPeerIpDiscovered } = {}) {
     sendNext();
   }, []);
 
+  const relayTraceHop = useCallback((data) => {
+    const dc = dcRef.current;
+    if (dc && dc.readyState === "open") {
+      dc.send(JSON.stringify({ type: "trace-hop", payload: data }));
+    }
+  }, []);
+
   const reset = useCallback(() => {
     dcRef.current?.close();
     pcRef.current?.close();
@@ -272,5 +291,6 @@ export function useFileTransfer({ onPeerIpDiscovered } = {}) {
     role, roomCode, connState, statusText,
     sendProgress, receiveProgress, incomingFile, peerIp,
     hostTransfer, joinTransfer, sendFile, reset,
+    relayTraceHop,
   };
-}
+}   
