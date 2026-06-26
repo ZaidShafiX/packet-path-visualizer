@@ -9,22 +9,21 @@ import json
 import random
 import string
 import geoip2.database
+import httpx
+import ipaddress
+import urllib.request
 
 app = FastAPI()
 
 # ── CORS — open for local + ngrok dev ────────────────────────────────────────
-# WebSocket connections don't go through CORS, but the Fetch/XHR calls from
-# the browser (e.g. future REST endpoints) do. Keep this permissive for dev.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # tighten to your ngrok URL in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ── Ngrok browser-warning bypass ─────────────────────────────────────────────
-# When you open an ngrok URL in a new browser, ngrok shows an interstitial
-# warning page. This header tells ngrok to skip it for API/WS requests.
 class NgrokHeaderMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -43,6 +42,21 @@ TARGETS = {
     "new-york":   "151.101.112.81",
 }
 
+_cable_cache = None
+
+@app.get("/api/cables")
+async def get_cables():
+    global _cable_cache
+    if _cable_cache is None:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://www.submarinecablemap.com/api/v3/cable/cable-geo.json",
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            _cable_cache = resp.json()
+    return _cable_cache
+
 # Signaling rooms: { code: { "host": ws, "guest": ws | None } }
 rooms = {}
 
@@ -52,17 +66,14 @@ def generate_room_code():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 def parse_ip_from_line(line):
+    """Extract and return the first IP address found in a traceroute line."""
     ips = re.findall(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', line)
-    for ip in ips:
-        parts = ip.split(".")
-        a, b = int(parts[0]), int(parts[1])
-        if a == 10: continue
-        if a == 172 and 16 <= b <= 31: continue
-        if a == 192 and b == 168: continue
-        return ip
+    if ips:
+        return ips[0]
     return None
 
 def is_public_ip(ip):
+    """Used only by /trace-ip endpoint to reject private peer IPs."""
     parts = ip.split(".")
     a, b = int(parts[0]), int(parts[1])
     if a == 10: return False
@@ -72,6 +83,7 @@ def is_public_ip(ip):
     return True
 
 def geolocate(ip, reader):
+    """Try to geolocate an IP using the local MaxMind GeoLite2 database."""
     try:
         r = reader.city(ip)
         lat, lng = r.location.latitude, r.location.longitude
@@ -79,6 +91,32 @@ def geolocate(ip, reader):
         city    = r.city.name    or "Unknown city"
         country = r.country.name or "Unknown country"
         return {"city": f"{city}, {country}", "lat": lat, "lng": lng}
+    except Exception:
+        return None
+
+def fallback_geolocate(ip):
+    """
+    Fallback geolocation via ip-api.com for IPs MaxMind can't resolve
+    (e.g. backbone routers, anycast addresses). Runs in a thread via
+    asyncio.to_thread so it doesn't block the event loop.
+    """
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,city,country,isp,lat,lon"
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("status") != "success":
+            return None
+        city    = data.get("city", "Unknown")
+        country = data.get("country", "Unknown")
+        isp     = data.get("isp", "")
+        lat     = data.get("lat")
+        lon     = data.get("lon")
+        if lat is None or lon is None:
+            return None
+        city_label = f"{city}, {country}"
+        if isp:
+            city_label += f" [{isp}]"
+        return {"city": city_label, "lat": lat, "lng": lon}
     except Exception:
         return None
 
@@ -95,27 +133,56 @@ async def run_trace(websocket, target_ip):
             line = raw_line.decode("utf-8").strip()
             if line.startswith("traceroute"): continue
             hop_number += 1
+
             ip = parse_ip_from_line(line)
+
+            # ── Timeout / no response ─────────────────────────────────────────
             if ip is None:
                 await websocket.send_text(json.dumps({
-                    "hop": hop_number, "city": "Unknown (timeout)",
-                    "lat": None, "lng": None, "timeout": True
+                    "hop": hop_number,
+                    "city": "Unknown (timeout)",
+                    "lat": None, "lng": None,
+                    "timeout": True, "is_private": False, "no_location": False
                 }))
                 continue
+
+            # ── Private / Reserved / CGNAT check ─────────────────────────────
+            try:
+                addr   = ipaddress.ip_address(ip)
+                cgnat  = addr in ipaddress.ip_network("100.64.0.0/10")
+                if addr.is_private or addr.is_reserved or cgnat:
+                    await websocket.send_text(json.dumps({
+                        "hop": hop_number, "ip": ip,
+                        "city": "Local / ISP Network",
+                        "lat": None, "lng": None,
+                        "timeout": False, "is_private": True, "no_location": False
+                    }))
+                    continue
+            except ValueError:
+                pass
+
+            # ── Public IP: MaxMind first, ip-api.com fallback ────────────────
             geo = geolocate(ip, reader)
             if geo is None:
+                geo = await asyncio.to_thread(fallback_geolocate, ip)
+
+            if geo is None:
                 await websocket.send_text(json.dumps({
-                    "hop": hop_number, "city": f"{ip} (no location)",
-                    "lat": None, "lng": None, "timeout": True
+                    "hop": hop_number, "ip": ip,
+                    "city": f"{ip} (no location data)",
+                    "lat": None, "lng": None,
+                    "timeout": False, "is_private": False, "no_location": True
                 }))
                 continue
+
             payload = {
                 "hop": hop_number, "ip": ip,
                 "city": geo["city"], "lat": geo["lat"], "lng": geo["lng"],
-                "timeout": False
+                "timeout": False, "is_private": False, "no_location": False
             }
             print(f"  → Hop {hop_number}: {ip} → {geo['city']}")
             await websocket.send_text(json.dumps(payload))
+
     await process.wait()
     await websocket.send_text(json.dumps({"done": True}))
 

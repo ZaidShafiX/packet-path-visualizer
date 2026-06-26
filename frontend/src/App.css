@@ -310,6 +310,38 @@ body {
 
 .btn-ghost:hover { color: #e2e8f0; border-color: #64748b; }
 
+/* ── Clear Trace button ───────────────────────────────────────────────────── */
+/* Sits alongside the Start button — understated ghost style so it doesn't
+   compete with the primary action, but clearly afforded as a destructive
+   reset. Uses a subtle red-tinted border on hover to signal "remove". */
+.btn-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  color: #64748b;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.btn-clear:hover:not(:disabled) {
+  color: #f87171;
+  border-color: #7f1d1d;
+  background: rgba(248, 113, 113, 0.06);
+}
+
+.btn-clear:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 /* ── Download button ─────────────────────────────────────────────────────── */
 .btn-download {
   display: inline-flex;
@@ -458,9 +490,25 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* State variants */
+/* ── State variants ─────────────────────────────────────────────────────── */
+
+/* Public geolocated hop — sky blue */
 .hop-card.hop-ok    { border-left-color: #0ea5e9; }
+
+/* Timeout / no response — amber */
 .hop-card.hop-warn  { border-left-color: #f59e0b; }
+
+/* Private / RFC-1918 / CGNAT hop — mint teal */
+.hop-card.hop-internal {
+  border-left-color: #06d4ae;
+  background: rgba(6, 212, 174, 0.05);
+}
+
+/* Public IP, responded, but couldn't be geolocated — neutral slate */
+.hop-card.hop-nogeo {
+  border-left-color: #64748b;
+  background: rgba(100, 116, 139, 0.05);
+}
 
 .hop-number {
   font-size: 10px;
@@ -493,6 +541,9 @@ body {
   margin-top: 2px;
 }
 
+/* ── Hop status badges ──────────────────────────────────────────────────── */
+
+/* Public geolocated — sky blue */
 .hop-status-ok {
   font-size: 10px;
   padding: 2px 6px;
@@ -505,12 +556,40 @@ body {
   letter-spacing: 0.03em;
 }
 
+/* Timeout — amber */
 .hop-status-warn {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(245,158,11,0.1);
   color: #f59e0b;
+  font-weight: 600;
+  flex-shrink: 0;
+  align-self: center;
+  letter-spacing: 0.03em;
+}
+
+/* Private / CGNAT / RFC-1918 — mint teal */
+.hop-status-internal {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(6, 212, 174, 0.08);
+  color: #06d4ae;
+  border: 1px solid rgba(6, 212, 174, 0.28);
+  font-weight: 600;
+  flex-shrink: 0;
+  align-self: center;
+  letter-spacing: 0.03em;
+}
+/* No geolocation data — neutral slate */
+.hop-status-nogeo {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.1);
+  color: #94a3b8;
+  border: 1px solid rgba(100, 116, 139, 0.28);
   font-weight: 600;
   flex-shrink: 0;
   align-self: center;

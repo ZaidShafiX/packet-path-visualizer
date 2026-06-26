@@ -7,6 +7,8 @@ const BACKEND_WS = window.location.hostname === "localhost"
   ? "ws://localhost:8000"
   : `wss://${window.location.host}`;
 
+const CABLE_GEO_URL = "/api/cables";
+
 const TARGETS = [
   { id: "google",     label: "🌐 Google DNS (8.8.8.8)" },
   { id: "cloudflare", label: "⚡ Cloudflare DNS (1.1.1.1)" },
@@ -15,10 +17,47 @@ const TARGETS = [
   { id: "new-york",   label: "🇺🇸 New York — Fastly" },
 ];
 
+const DEFAULT_STATUS = "Select a destination and start a trace";
+
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${["B","KB","MB","GB"][i]}`;
+}
+
+/**
+ * Parse the TeleGeography GeoJSON into the flat array pathsData expects.
+ *
+ * Each GeoJSON Feature has geometry.type === "MultiLineString", meaning
+ * geometry.coordinates is an array of separate line segments (a cable can
+ * split around islands, branch to multiple landing points, etc).
+ *
+ * We flatten each segment into its own path object so globe.gl draws each
+ * continuous segment as one unbroken line, rather than connecting
+ * geographically separate segments with a straight line across the globe.
+ *
+ * GeoJSON coordinates are [lng, lat] — globe.gl wants lat/lng separately,
+ * so we wire pathPointLat(p => p[1]) and pathPointLng(p => p[0]).
+ */
+function parseCableGeoJSON(geojson) {
+  const paths = [];
+  for (const feature of geojson.features) {
+    const { color, name } = feature.properties;
+    const { type, coordinates } = feature.geometry;
+
+    if (type === "MultiLineString") {
+      for (const segment of coordinates) {
+        if (segment.length >= 2) {
+          paths.push({ coords: segment, color, name });
+        }
+      }
+    } else if (type === "LineString") {
+      if (coordinates.length >= 2) {
+        paths.push({ coords: coordinates, color, name });
+      }
+    }
+  }
+  return paths;
 }
 
 export default function App() {
@@ -27,16 +66,17 @@ export default function App() {
   const pointsRef      = useRef([]);
   const arcsRef        = useRef([]);
   const tracingRef     = useRef(false);
-  const relayHopRef    = useRef(null);   // always points to transfer.relayTraceHop
-  const roleRef        = useRef(null);   // always points to transfer.role
-  const relayedHopsRef = useRef([]);     // hops received from host (guest side)
+  const relayHopRef    = useRef(null);
+  const roleRef        = useRef(null);
+  const relayedHopsRef = useRef([]);
 
   const [hops, setHops]               = useState([]);
-  const [traceStatus, setTraceStatus] = useState("Select a destination and start a trace");
+  const [traceStatus, setTraceStatus] = useState(DEFAULT_STATUS);
   const [tracing, setTracing]         = useState(false);
   const [target, setTarget]           = useState("google");
   const [tab, setTab]                 = useState("trace");
   const [joinCode, setJoinCode]       = useState("");
+  const [cablesLoaded, setCablesLoaded] = useState(false);
   const fileInputRef = useRef(null);
 
   // ── Globe init ─────────────────────────────────────────────────────────────
@@ -46,12 +86,36 @@ export default function App() {
     g.globeImageUrl("//unpkg.com/three-globe/example/img/earth-night.jpg")
      .backgroundImageUrl("//unpkg.com/three-globe/example/img/night-sky.png")
      .atmosphereColor("#1a8cff").atmosphereAltitude(0.15)
+     // Trace hop points
      .pointsData([]).pointLat("lat").pointLng("lng")
      .pointColor(() => "#3b82f6").pointAltitude(0.01).pointRadius(0.4)
      .pointLabel(d => `<div style="background:#111827;color:#e2e8f0;padding:8px 12px;border-radius:8px;font-family:-apple-system,sans-serif;font-size:12px;border:1px solid #1e293b;line-height:1.5"><b style="color:#60a5fa">Hop ${d.hop}</b><br/>${d.city}<br/><span style="color:#64748b;font-family:monospace">${d.ip||""}</span></div>`)
+     // Trace hop arcs
      .arcsData([]).arcStartLat("startLat").arcStartLng("startLng").arcEndLat("endLat").arcEndLng("endLng")
      .arcColor(() => "#3b82f6").arcAltitude(0.3).arcStroke(0.5)
-     .arcDashLength(0.4).arcDashGap(0.2).arcDashAnimateTime(1500);
+     .arcDashLength(0.4).arcDashGap(0.2).arcDashAnimateTime(1500)
+     // Submarine cable paths — empty until fetch resolves
+     .pathsData([])
+     .pathPoints("coords")
+     .pathPointLat(p => p[1])
+     .pathPointLng(p => p[0])
+     .pathPointAlt(0)
+     .pathColor(path => [
+       `${path.color}28`,
+       `${path.color}70`,
+       `${path.color}28`,
+     ])
+     .pathStroke(0.8)
+     .pathDashLength(0.02)
+     .pathDashGap(0.006)
+     .pathDashAnimateTime(20000)
+     .pathLabel(path => `
+       <div style="background:#111827;color:#e2e8f0;padding:6px 10px;border-radius:6px;
+                   font-family:-apple-system,sans-serif;font-size:11px;border:1px solid #1e293b">
+         🌊 ${path.name}
+       </div>
+     `);
+
     g.width(globeDivRef.current.clientWidth);
     g.height(globeDivRef.current.clientHeight);
     g.pointOfView({ lat: 30, lng: 50, altitude: 2 }, 0);
@@ -65,6 +129,47 @@ export default function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // ── Submarine cable fetch ─────────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCables() {
+      try {
+        const res = await fetch(CABLE_GEO_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const geojson = await res.json();
+        if (cancelled) return;
+
+        const paths = parseCableGeoJSON(geojson);
+
+        const applyWhenReady = () => {
+          if (globeRef.current) {
+            globeRef.current.pathsData(paths);
+            setCablesLoaded(true);
+          } else {
+            setTimeout(applyWhenReady, 100);
+          }
+        };
+        applyWhenReady();
+      } catch (err) {
+        console.warn("Submarine cable fetch failed:", err.message);
+      }
+    }
+
+    loadCables();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Clear Trace ────────────────────────────────────────────────────────────
+  const clearTrace = useCallback(() => {
+    setHops([]);
+    pointsRef.current = [];
+    arcsRef.current   = [];
+    globeRef.current?.pointsData([]);
+    globeRef.current?.arcsData([]);
+    setTraceStatus(DEFAULT_STATUS);
+  }, []);
+
   // ── Shared traceroute runner ───────────────────────────────────────────────
   const runTrace = useCallback((wsUrl, label) => {
     tracingRef.current = true;
@@ -76,7 +181,6 @@ export default function App() {
     globeRef.current?.pointsData([]);
     globeRef.current?.arcsData([]);
 
-    // Tell the guest to clear their globe and prepare for incoming hops
     relayHopRef.current?.({ reset: true });
 
     const ws = new WebSocket(wsUrl);
@@ -92,10 +196,9 @@ export default function App() {
       }
 
       if (data.done) {
-        const located = collected.filter(h => !h.timeout).length;
+        const located = collected.filter(h => !h.timeout && !h.is_private).length;
         setTraceStatus(`Trace complete — ${collected.length} hops, ${located} located`);
         setTracing(false); tracingRef.current = false;
-        // Tell guest trace is finished
         relayHopRef.current?.({ done: true, total: collected.length, located });
         ws.close();
         return;
@@ -103,15 +206,14 @@ export default function App() {
 
       collected.push(data);
       setHops([...collected]);
-
-      // Relay every hop to the guest so their globe draws the same path
       relayHopRef.current?.(data);
 
-      if (!data.timeout && data.lat && data.lng) {
+      // Only plot geolocated public hops on the globe
+      if (!data.timeout && !data.is_private && data.lat && data.lng) {
         pointsRef.current = [...pointsRef.current, data];
         globeRef.current?.pointsData(pointsRef.current);
 
-        const prev = collected.slice(0, -1).reverse().find(h => !h.timeout && h.lat);
+        const prev = collected.slice(0, -1).reverse().find(h => !h.timeout && !h.is_private && h.lat);
         if (prev) {
           arcsRef.current = [...arcsRef.current, {
             startLat: prev.lat, startLng: prev.lng,
@@ -132,7 +234,6 @@ export default function App() {
 
   const startTrace = () => runTrace(`${BACKEND_WS}/trace?target=${target}`);
 
-  // Host traces to peer IP. Guest skips own trace — they see it via relay.
   const startTraceToIP = useCallback((ip) => {
     if (roleRef.current === "guest") {
       setTraceStatus("Receiving route trace from host...");
@@ -143,7 +244,6 @@ export default function App() {
     setTab("trace");
   }, [runTrace]);
 
-  // Renders hops that arrived via data channel relay (guest side)
   const handleRelayedHop = useCallback((data) => {
     if (data.reset) {
       relayedHopsRef.current = [];
@@ -165,11 +265,11 @@ export default function App() {
     relayedHopsRef.current = [...relayedHopsRef.current, data];
     setHops([...relayedHopsRef.current]);
 
-    if (!data.timeout && data.lat && data.lng) {
+    if (!data.timeout && !data.is_private && data.lat && data.lng) {
       pointsRef.current = [...pointsRef.current, data];
       globeRef.current?.pointsData(pointsRef.current);
 
-      const prev = relayedHopsRef.current.slice(0, -1).reverse().find(h => !h.timeout && h.lat);
+      const prev = relayedHopsRef.current.slice(0, -1).reverse().find(h => !h.timeout && !h.is_private && h.lat);
       if (prev) {
         arcsRef.current = [...arcsRef.current, {
           startLat: prev.lat, startLng: prev.lng,
@@ -187,7 +287,6 @@ export default function App() {
     onTraceHop: handleRelayedHop,
   });
 
-  // Keep refs in sync every render so runTrace closures always see fresh values
   relayHopRef.current = transfer.relayTraceHop;
   roleRef.current     = transfer.role;
 
@@ -197,12 +296,27 @@ export default function App() {
     e.target.value = "";
   };
 
-  // ── Render (UI unchanged) ──────────────────────────────────────────────────
+  // ── Hop card class helper ──────────────────────────────────────────────────
+  const hopCardClass = (h) => {
+    if (h.timeout)     return "hop-card hop-warn";
+    if (h.is_private)  return "hop-card hop-internal";
+    if (h.no_location) return "hop-card hop-nogeo";
+    return "hop-card hop-ok";
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="app-container">
 
       <div className="globe-section">
         <div ref={globeDivRef} className="globe-canvas" />
+
+        {!cablesLoaded && (
+          <div className="cable-loading">
+            <span className="cable-loading-dot" />
+            Loading submarine cables…
+          </div>
+        )}
 
         {(transfer.sendProgress !== null || transfer.receiveProgress !== null) && (
           <div className="transfer-panel">
@@ -251,6 +365,9 @@ export default function App() {
                 </select>
                 <button className="btn-primary" onClick={startTrace} disabled={tracing}>
                   {tracing ? "Tracing…" : "▶ Start"}
+                </button>
+                <button className="btn-clear" onClick={clearTrace} disabled={tracing}>
+                  ✕ Clear
                 </button>
               </div>
               <div className="status-line">{traceStatus}</div>
@@ -335,7 +452,7 @@ export default function App() {
                 <span className="hop-count-badge">{hops.length} hops</span>
               </div>
               {hops.map(h => (
-                <div key={h.hop} className={`hop-card ${h.timeout ? "hop-warn" : "hop-ok"}`}>
+                <div key={h.hop} className={hopCardClass(h)}>
                   <span className="hop-number">{h.hop}</span>
                   <div className="hop-info">
                     {h.timeout ? (
@@ -350,10 +467,15 @@ export default function App() {
                       </>
                     )}
                   </div>
-                  {h.timeout
-                    ? <span className="hop-status-warn">TIMEOUT</span>
-                    : <span className="hop-status-ok">OK</span>
-                  }
+                  {h.timeout ? (
+                    <span className="hop-status-warn">TIMEOUT</span>
+                  ) : h.is_private ? (
+                    <span className="hop-status-internal">PRIVATE</span>
+                  ) : h.no_location ? (
+                    <span className="hop-status-nogeo">NO GEO</span>
+                  ) : (
+                    <span className="hop-status-ok">OK</span>
+                  )}
                 </div>
               ))}
             </>
