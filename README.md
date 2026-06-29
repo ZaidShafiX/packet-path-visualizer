@@ -47,6 +47,16 @@ Browser (You)                    Backend (Python)              Browser (Friend)
 - **NO GEO** — a public IP that responded but couldn't be geolocated by either MaxMind or the fallback
 - **TIMEOUT** — no response at all from that hop
 
+**The logging system** uses Python's built-in `logging` module with a non-blocking architecture — a `QueueHandler` pushes log records onto an in-memory queue instantly, and a background `QueueListener` thread handles the actual disk writes, so a slow disk can never stall a live traceroute or WebRTC handshake. Every line follows the format:
+
+```
+[TIMESTAMP] [LEVEL] [COMPONENT] - Message | Metadata: {JSON}
+```
+
+A new timestamped log file is created per server session under `logs/`. The `logs/` directory is tracked in git (via `.gitkeep`) but all `*.log` files are gitignored.
+
+**The telemetry bridge** solves a specific observability gap: since file transfers are pure P2P (the backend never sees the actual bytes), the frontend sends a small JSON message over the already-open signaling WebSocket when a file is sent or received. The backend intercepts these, logs them at `[INFO]`, and does not relay them to the other peer. This means the log records the full session — room lifecycle, WebRTC handshake, and file transfer events — even though the backend was never in the data path.
+
 ---
 
 ## Tech stack
@@ -60,7 +70,16 @@ Browser (You)                    Backend (Python)              Browser (Friend)
 | Submarine cables | submarinecablemap.com (TeleGeography) GeoJSON | Real-world cable routes as a reference layer, proxied through the backend |
 | P2P Transfer | WebRTC RTCDataChannel | Direct browser-to-browser, no server relay for data |
 | NAT Traversal | STUN + TURN (openrelay) | Handles strict firewalls and symmetric NAT |
+| Logging | Python built-in `logging` + QueueListener | Non-blocking file logging, one timestamped file per session |
 | Dev tunneling | ngrok | Exposes localhost backend for remote testing |
+
+---
+
+## Prerequisites
+
+**The backend requires Linux or WSL.** It will not run on Windows natively. This is a hard requirement — the backend shells out to the system `traceroute` command, which relies on raw socket access that is only available on Linux. If you're on Windows, use WSL (Windows Subsystem for Linux). macOS works natively.
+
+Everything else (frontend, browser) works on any platform.
 
 ---
 
@@ -118,10 +137,14 @@ getcap $(readlink -f $(which traceroute))   # confirm it shows cap_net_raw=ep
 - Peer IP discovery via `getStats()` (more reliable than parsing ICE candidate strings)
 - Trace relay through the data channel so both sender and receiver see the globe animate
 - FastAPI serving the built React frontend as static files (single port, no separate frontend server needed in production)
+- Non-blocking structured file logging with per-session timestamped log files, component tagging, and JSON metadata on every line
+- Telemetry bridge reporting P2P file transfer events (`file_shared`, `file_downloaded`) back to the backend log over the existing signaling WebSocket
 
 ---
 
 ## Known limitations
+
+**The backend only runs on Linux or WSL.** The `traceroute` command and `cap_net_raw` Linux capability are not available on Windows natively. See Prerequisites above.
 
 **All traces run from the backend's machine.** `traceroute` is a system command — browsers can't run it. So whoever is hosting the backend sets the geographic origin of every trace. With ngrok, that's always the host's machine. With a deployed VPS, it would be the server's datacenter. There's no way to trace "from the user's location" without either running the backend on their machine or having a geographically distributed network of backend servers.
 
@@ -137,7 +160,9 @@ getcap $(readlink -f $(which traceroute))   # confirm it shows cap_net_raw=ep
 
 ## What's not built yet
 
+- **Dockerization** — The app is not yet containerized. The goal is a `docker-compose` setup with separate backend and frontend containers, making it portable and deployable without manual environment setup. The Linux-only `traceroute` + `cap_net_raw` requirement needs special handling here — the backend container will need the capability granted at the Docker level (`--cap-add NET_RAW`).
 - **Deployment** — The app runs on localhost + ngrok for now. Deploying to a VPS (DigitalOcean, Linode, etc.) would make it publicly accessible without ngrok and would also fix the "traces always start from my machine" limitation.
+- **Modular architecture** — The backend logic (routing, tracing, geolocation, ASN lookup, signaling, logging) and frontend UI (globe, sidebar views, transfer panel) currently live in large single files. A planned refactor will split these into independent modules with clean interfaces, making the codebase easier to maintain and extend.
 - **Self-hosted TURN server** — Currently using a free public TURN relay (openrelay.metered.ca). For production, a dedicated coturn instance on the same VPS would be more reliable and private.
 - **Bidirectional file transfer** — Currently only the host can send a file to the guest. Making it bidirectional (either side can send) is a small data channel protocol change.
 - **Mobile layout** — The sidebar + globe split doesn't adapt well to small screens.
