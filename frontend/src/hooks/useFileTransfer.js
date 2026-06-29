@@ -12,21 +12,21 @@ const RTC_CONFIG = {
     { urls: "stun:stun1.l.google.com:19302" },
     // Free public TURN relay (Open Relay Project) — fallback for peers behind
     // symmetric NAT / CGNAT where STUN-only direct connections can't form.
-    { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:80",              username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443",             username: "openrelayproject", credential: "openrelayproject" },
     { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
   ],
 };
 
 export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
-  const [role, setRole]                   = useState(null);   // "host" | "guest"
-  const [roomCode, setRoomCode]           = useState("");
-  const [connState, setConnState]         = useState("idle"); // idle | waiting | connecting | connected | failed | closed
-  const [statusText, setStatusText]       = useState("");
-  const [sendProgress, setSendProgress]   = useState(null);   // 0-100 or null
+  const [role, setRole]                       = useState(null);   // "host" | "guest"
+  const [roomCode, setRoomCode]               = useState("");
+  const [connState, setConnState]             = useState("idle"); // idle | waiting | connecting | connected | failed | closed
+  const [statusText, setStatusText]           = useState("");
+  const [sendProgress, setSendProgress]       = useState(null);   // 0–100 or null
   const [receiveProgress, setReceiveProgress] = useState(null);
-  const [incomingFile, setIncomingFile]   = useState(null);   // { name, size, url }
-  const [peerIp, setPeerIp]               = useState(null);
+  const [incomingFile, setIncomingFile]       = useState(null);   // { name, size, url }
+  const [peerIp, setPeerIp]                   = useState(null);
 
   const signalRef       = useRef(null);
   const pcRef           = useRef(null);
@@ -38,7 +38,26 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
   const onTraceHopRef   = useRef(onTraceHop);
   onTraceHopRef.current = onTraceHop;
 
-  // Use getStats() on the live connection — more reliable than parsing ICE strings
+  // Mirrors `roomCode` state into a ref so stable useCallbacks (empty dep
+  // arrays) always see the current value instead of the stale closure value.
+  const roomCodeRef     = useRef(roomCode);
+  roomCodeRef.current   = roomCode;
+
+  // ── Telemetry Bridge ────────────────────────────────────────────────────────
+  // The backend never sees actual file bytes (WebRTC P2P, by design). This
+  // helper reports file events back over the existing /signal WebSocket so the
+  // Python logger can record them without opening a second connection.
+  // Shape on the wire: { type: "telemetry", event: <name>, ...metadata }
+  // The backend's `_handle_signal_message` intercepts these, logs them at
+  // INFO, and returns True so they are NOT relayed to the remote peer.
+  const sendTelemetry = useCallback((eventName, metadata = {}) => {
+    const ws = signalRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "telemetry", event: eventName, ...metadata }));
+    }
+  }, []);
+
+  // Use getStats() on the live connection — more reliable than parsing ICE strings.
   const discoverPeerIp = useCallback(async (pc) => {
     if (ipDiscoveredRef.current) return;
     await new Promise(r => setTimeout(r, 500)); // let stats settle
@@ -75,7 +94,7 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
       setStatusText("Connected — pick a file to send, or wait to receive one");
     };
 
-    dc.onclose  = () => { setConnState("closed");  setStatusText("Connection closed"); };
+    dc.onclose = () => { setConnState("closed"); setStatusText("Connection closed"); };
 
     dc.onmessage = (event) => {
       if (typeof event.data === "string") {
@@ -100,6 +119,17 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
             const blob = new Blob(recvBufRef.current, { type: meta.mime });
             setIncomingFile({ name: meta.name, size: meta.size, url: URL.createObjectURL(blob) });
             setStatusText(`✅ Received "${meta.name}"`);
+
+            // ── Telemetry: notify backend that a P2P download completed ──────
+            // Fired here (after blob assembly) rather than on "file-start" so
+            // the backend log reflects a *completed* transfer, not just an
+            // initiated one. The room code comes from the ref so this callback
+            // doesn't need roomCode in its dependency array.
+            sendTelemetry("file_downloaded", {
+              filename: meta.name,
+              size:     meta.size,
+              room:     roomCodeRef.current,
+            });
           }
           setReceiveProgress(null);
           recvMetaRef.current = null;
@@ -108,7 +138,7 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
         return;
       }
 
-      // Binary chunk — accumulate and update progress
+      // Binary chunk — accumulate and update progress bar.
       recvBufRef.current.push(event.data);
       recvSizeRef.current += event.data.byteLength;
       const meta = recvMetaRef.current;
@@ -116,7 +146,7 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
         setReceiveProgress(Math.min(100, Math.round((recvSizeRef.current / meta.size) * 100)));
       }
     };
-  }, []);
+  }, [sendTelemetry]);
 
   const createPeerConnection = useCallback(() => {
     const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -137,7 +167,7 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
       }
     };
 
-    // Guest receives the data channel here
+    // Guest receives the data channel here.
     pc.ondatachannel = (e) => wireDataChannel(e.channel);
 
     return pc;
@@ -234,6 +264,13 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
     const dc = dcRef.current;
     if (!dc || dc.readyState !== "open") { setStatusText("Not connected yet"); return; }
 
+    // ── Telemetry: notify backend that a P2P send is starting ───────────────
+    sendTelemetry("file_shared", {
+      filename: file.name,
+      size:     file.size,
+      room:     roomCodeRef.current,
+    });
+
     setSendProgress(0);
     setStatusText(`Sending "${file.name}"...`);
     dc.send(JSON.stringify({ type: "file-start", name: file.name, size: file.size, mime: file.type }));
@@ -268,7 +305,7 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
     };
 
     sendNext();
-  }, []);
+  }, [sendTelemetry]);
 
   const relayTraceHop = useCallback((data) => {
     const dc = dcRef.current;
@@ -292,5 +329,6 @@ export function useFileTransfer({ onPeerIpDiscovered, onTraceHop } = {}) {
     sendProgress, receiveProgress, incomingFile, peerIp,
     hostTransfer, joinTransfer, sendFile, reset,
     relayTraceHop,
+    sendTelemetry,  // exported so App.jsx can fire custom events if needed
   };
-}   
+}

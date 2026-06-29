@@ -5,3 +5,4 @@ __pyache__/
 *.pyc
 .env
 repomix-output.xml
+logs/*.log
