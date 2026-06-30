@@ -37,9 +37,27 @@ Browser (You)                    Backend (Python)              Browser (Friend)
      │     (friend's globe draws same path)                           │
 ```
 
-**The backend** runs in Python with FastAPI, without requiring root privileges — `traceroute` is granted the `cap_net_raw` Linux capability directly (`setcap cap_net_raw+ep`) so it can open raw sockets as a normal user. It handles three WebSocket endpoints — `/trace` for curated V1 destinations, `/trace-ip` for tracing to a peer's discovered IP, and `/signal` as the WebRTC signaling relay — plus a small REST endpoint, `/api/cables`, that proxies and caches the submarine cable GeoJSON server-side (avoiding CORS issues with fetching it directly from the browser). It also serves the built frontend as static files so everything runs through one port.
+**The backend** runs in Python with FastAPI, without requiring root privileges — `traceroute` is granted the `cap_net_raw` Linux capability directly (`setcap cap_net_raw+ep`) so it can open raw sockets as a normal user. It's organized into focused modules rather than one large file:
 
-**The frontend** is React. The globe is rendered using globe.gl (WebGL via Three.js), with the submarine cable network rendered as a dim, animated background layer beneath the active trace arcs. All the WebRTC logic — ICE negotiation, data channel, file chunking with backpressure, peer IP discovery via `getStats()` — lives in a custom hook (`useFileTransfer`).
+- `core/` — configuration constants and the non-blocking logging setup
+- `routers/` — the three FastAPI route handlers (`trace.py`, `signal.py`, `cables.py`), kept thin and delegating to services
+- `services/` — the actual traceroute runner, ASN/BGP lookup, reverse DNS, and geolocation logic
+- `signaling/` — WebRTC room lifecycle management and the telemetry bridge
+
+It exposes three WebSocket endpoints — `/trace` for curated V1 destinations, `/trace-ip` for tracing to a peer's discovered IP, and `/signal` as the WebRTC signaling relay — plus a small REST endpoint, `/api/cables`, that proxies and caches the submarine cable GeoJSON server-side (avoiding CORS issues with fetching it directly from the browser). It also serves the built frontend as static files so everything runs through one port.
+
+**The frontend** is React, similarly split into components rather than a single `App.jsx`:
+
+- `components/Globe/` — the globe.gl WebGL instance, submarine cable overlay, and the cable-info/transfer-progress UI that sits on top of it
+- `components/Sidebar/` — `Sidebar.jsx` (shell + theme toggle) and one view component per screen: `HomeView`, `TraceView`, `TransferView`, `SummaryView`
+- `components/shared/` — small reusable pieces (`ProgressBar`, `ThemeToggle`)
+- `hooks/` — `useFileTransfer` (WebRTC: ICE negotiation, data channel, chunked sending with backpressure, peer IP discovery via `getStats()`) and `useTraceroute` (trace lifecycle, hop state, globe point/arc updates)
+- `services/` — `signaling.js` (WebSocket signaling client) and `telemetry.js` (file-transfer event reporting)
+- `utils/summary.js` — trace summary statistics (hop counts, RTT min/max/avg, ASN/country counts, exit point inference)
+
+`App.jsx` wires these together and owns top-level navigation state (`view`) and the active theme.
+
+**Light and dark themes.** The whole sidebar (not the globe — that stays dark in both modes, since it's rendering a night-side Earth texture) switches between a warm charcoal dark mode, and a clean white light mode. The toggle lives top-right in the sidebar header; the choice is applied via a `data-theme` attribute on `<html>`, and every color in `App.css` is a CSS custom property so the two palettes stay in one place rather than scattered `dark:` overrides.
 
 **Geolocation** uses a local MaxMind GeoLite2 binary database as the primary source, with `ip-api.com` as a live fallback for IPs MaxMind can't resolve (e.g. backbone/anycast routers). Each hop is classified into one of four states before being sent to the frontend:
 - **OK** — a public IP, successfully geolocated
@@ -63,13 +81,14 @@ A new timestamped log file is created per server session under `logs/`. The `log
 
 | Layer | Tool | Why |
 |---|---|---|
-| Backend | Python + FastAPI | Async WebSocket support, runs system commands |
+| Backend | Python + FastAPI | Async WebSocket support, runs system commands, modular routers/services |
 | Geolocation | MaxMind GeoLite2 + ip-api.com fallback | Local binary DB for instant lookups, live API for what MaxMind misses |
 | Frontend | React + Vite | Component model, fast dev server |
 | 3D Globe | globe.gl | WebGL rendering, geodesic arcs, atmosphere, path overlays |
 | Submarine cables | submarinecablemap.com (TeleGeography) GeoJSON | Real-world cable routes as a reference layer, proxied through the backend |
 | P2P Transfer | WebRTC RTCDataChannel | Direct browser-to-browser, no server relay for data |
 | NAT Traversal | STUN + TURN (openrelay) | Handles strict firewalls and symmetric NAT |
+| Theming | CSS custom properties + `data-theme` attribute | Single source of truth for dark/light palettes, no per-component overrides |
 | Logging | Python built-in `logging` + QueueListener | Non-blocking file logging, one timestamped file per session |
 | Dev tunneling | ngrok | Exposes localhost backend for remote testing |
 
@@ -139,6 +158,8 @@ getcap $(readlink -f $(which traceroute))   # confirm it shows cap_net_raw=ep
 - FastAPI serving the built React frontend as static files (single port, no separate frontend server needed in production)
 - Non-blocking structured file logging with per-session timestamped log files, component tagging, and JSON metadata on every line
 - Telemetry bridge reporting P2P file transfer events (`file_shared`, `file_downloaded`) back to the backend log over the existing signaling WebSocket
+- Modular backend (`core` / `routers` / `services` / `signaling`) and frontend (`components` / `hooks` / `services` / `utils`) — each concern lives in its own file with a clear interface, instead of one large `main.py` / `App.jsx`
+- Dark and light theme support, toggled from the sidebar header, driven entirely by CSS custom properties so the whole UI repaints from one source of truth
 
 ---
 
@@ -156,13 +177,15 @@ getcap $(readlink -f $(which traceroute))   # confirm it shows cap_net_raw=ep
 
 **The arc is a geodesic estimate.** We know the start and end coordinates of each hop pair — the curve between them is the mathematically correct shortest path over the globe (great circle), which roughly matches how undersea cables are laid. It is not the literal cable path.
 
+**The globe stays dark in light mode.** It's rendering a night-side Earth texture regardless of UI theme, by design — only the sidebar repaints.
+
 ---
 
 ## What's not built yet
 
 - **Dockerization** — The app is not yet containerized. The goal is a `docker-compose` setup with separate backend and frontend containers, making it portable and deployable without manual environment setup. The Linux-only `traceroute` + `cap_net_raw` requirement needs special handling here — the backend container will need the capability granted at the Docker level (`--cap-add NET_RAW`).
 - **Deployment** — The app runs on localhost + ngrok for now. Deploying to a VPS (DigitalOcean, Linode, etc.) would make it publicly accessible without ngrok and would also fix the "traces always start from my machine" limitation.
-- **Modular architecture** — The backend logic (routing, tracing, geolocation, ASN lookup, signaling, logging) and frontend UI (globe, sidebar views, transfer panel) currently live in large single files. A planned refactor will split these into independent modules with clean interfaces, making the codebase easier to maintain and extend.
 - **Self-hosted TURN server** — Currently using a free public TURN relay (openrelay.metered.ca). For production, a dedicated coturn instance on the same VPS would be more reliable and private.
 - **Bidirectional file transfer** — Currently only the host can send a file to the guest. Making it bidirectional (either side can send) is a small data channel protocol change.
 - **Mobile layout** — The sidebar + globe split doesn't adapt well to small screens.
+- **Theme persistence** — The dark/light choice currently resets to dark on every page reload; saving it (e.g. to `localStorage`) would make it stick across sessions.

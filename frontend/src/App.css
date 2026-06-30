@@ -5,14 +5,13 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
-/*  DESIGN TOKENS — DARK (default)                                             */
-/*  Base: #1f1f1e — exact colour sampled from Claude.ai sidebar               */
+/*  DESIGN TOKENS — DARK (default) 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 :root,
 [data-theme="dark"] {
   /* Backgrounds — warm charcoal scale */
   --bg-deep:    #161615;   /* outer shell / body */
-  --bg-base:    #1f1f1e;   /* ← Claude.ai sidebar exact */
+  --bg-base:    #1f1f1e;   /* sidebar base */
   --bg-surface: #282827;   /* cards, chips, inputs */
   --bg-raised:  #313130;   /* hover states */
   --bg-overlay: rgba(22,22,21,0.93);
