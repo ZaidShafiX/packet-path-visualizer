@@ -1,0 +1,138 @@
+# =============================================================================
+# Packet Path Visualizer — docker-compose.yml
+# =============================================================================
+#
+# Profiles
+# --------
+#   (default / no profile)  →  production-like: single built image, no mounts
+#   dev                     →  hot-reload for both backend and frontend
+#
+# Usage
+# -----
+#   Production:   docker compose up --build
+#   Development:  docker compose --profile dev up --build
+#
+# GeoLite2 database
+# -----------------
+# The .mmdb file is NOT in the image (it's gitignored and too large to bake
+# in for dev cycles). Mount it from the host — see the `volumes` section.
+# Download it free from: https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+# =============================================================================
+
+services:
+
+  # ── Production image (default) ─────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend           # final stage; contains built frontend too
+    image: packet-path-visualizer:latest
+    container_name: ppv-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # GeoIP database — must exist on the host before starting.
+      - ./backend/GeoLite2-City.mmdb:/app/backend/GeoLite2-City.mmdb:ro
+      # Persist structured log files across restarts.
+      - ppv-logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    # Healthcheck — poll the SPA index so we know FastAPI + static serving
+    # are both alive, not just that the port opened.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    profiles: [""]          # belongs to the default (no-profile) group
+    networks:
+      - ppv-net
+
+
+  # ── Development: FastAPI with --reload ─────────────────────────────────────
+  backend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Stop at the backend stage — skip the vite build entirely in dev.
+      target: backend
+    image: packet-path-visualizer:dev
+    container_name: ppv-backend-dev
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Live-mount the entire backend source so --reload picks up edits.
+      - ./backend:/app/backend:ro
+      # GeoIP DB (read-only).
+      - ./backend/GeoLite2-City.mmdb:/app/backend/GeoLite2-City.mmdb:ro
+      # Writable log dir.
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    command:
+      - uvicorn
+      - backend.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload                  # watches /app/backend for changes
+      - --reload-dir
+      - /app/backend
+      - --log-level
+      - debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/cables"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    profiles: ["dev"]
+    networks:
+      - ppv-net
+
+
+  # ── Development: Vite dev server with HMR ──────────────────────────────────
+  frontend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend-deps     # has node_modules; cheap to rebuild
+    image: packet-path-visualizer:frontend-dev
+    container_name: ppv-frontend-dev
+    restart: unless-stopped
+    working_dir: /app/frontend
+    # Override the default CMD (there is none on this stage) with vite dev.
+    command: npx vite --host 0.0.0.0 --port 5173
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      # Full source mount for HMR — node_modules comes from the image layer,
+      # the anonymous volume below prevents the host from shadowing it.
+      - ./frontend:/app/frontend
+      - /app/frontend/node_modules   # anonymous vol: keeps image node_modules
+    environment:
+      - NODE_ENV=development
+      # Point the frontend's WebSocket calls at the backend-dev container.
+      # Vite proxy is configured in vite.config.js (see note below).
+      - VITE_BACKEND_WS=ws://localhost:${BACKEND_PORT:-8000}
+    depends_on:
+      backend-dev:
+        condition: service_healthy
+    profiles: ["dev"]
+    networks:
+      - ppv-net
+
+
+volumes:
+  ppv-logs:         # named volume for production log persistence
+
+networks:
+  ppv-net:
+    driver: bridge

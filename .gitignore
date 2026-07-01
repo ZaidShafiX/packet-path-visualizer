@@ -1,8 +1,15 @@
 node_modules/
 backend/venv/
 backend/*.mmdb
-__pyache__/
+
 *.pyc
+__pycache__/
+
 .env
+
+frontend/node_modules/
+frontend/dist/
+
 repomix-output.xml
+
 logs/*.log

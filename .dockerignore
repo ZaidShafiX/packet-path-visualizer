@@ -1,0 +1,82 @@
+# =============================================================================
+# .dockerignore — Packet Path Visualizer
+# =============================================================================
+# Keeps the build context lean. Docker sends everything NOT listed here to
+# the daemon; trimming it speeds up `docker build` and prevents secrets /
+# generated artefacts from leaking into the image.
+# =============================================================================
+
+
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+
+# ── Python artefacts ──────────────────────────────────────────────────────────
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+backend/venv/
+backend/.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+
+# ── Node / frontend build artefacts ───────────────────────────────────────────
+# node_modules is rebuilt inside the image via `npm ci`; never copy from host.
+**/node_modules/
+frontend/dist/       # produced by stage 2; not needed in build context
+
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example        # allow a committed example file through
+
+
+# ── GeoIP database ────────────────────────────────────────────────────────────
+# The .mmdb is mounted at runtime (see docker-compose.yml volumes).
+# Excluding it from the context avoids a ~60 MB upload on every build.
+backend/*.mmdb
+
+
+# ── Editor / OS noise ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+
+# ── Docker files themselves ───────────────────────────────────────────────────
+# No need to bake these into the image.
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+
+# ── Docs & tooling config (not needed at runtime) ────────────────────────────
+README.md
+repomix-output.xml
+*.md
+frontend/eslint.config.js
+frontend/README.md
+
+
+# ── Test files ────────────────────────────────────────────────────────────────
+tests/
+**/*.test.*
+**/*.spec.*

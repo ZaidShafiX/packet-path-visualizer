@@ -6,8 +6,17 @@ lookup tables live here so every other module imports from one place.
 Nothing in this file should perform I/O or import heavy dependencies.
 """
 
+from pathlib import Path
+
 # ── GeoIP database path ───────────────────────────────────────────────────────
 GEOIP_DB = "backend/GeoLite2-City.mmdb"
+
+if not Path(GEOIP_DB).exists():
+    raise RuntimeError(
+        "GeoLite2-City.mmdb not found at backend/GeoLite2-City.mmdb. "
+        "Download it free from https://dev.maxmind.com and place it there. "
+        "See README.md for setup instructions."
+    )
 
 # ── Curated trace targets (V1 dropdown) ──────────────────────────────────────
 TARGETS: dict[str, str] = {
@@ -19,13 +28,9 @@ TARGETS: dict[str, str] = {
 }
 
 # ── Signaling / room lifecycle ────────────────────────────────────────────────
-# Rooms older than ROOM_TTL_SECONDS are reaped even without a clean disconnect
-# (covers crashed tabs, lost network, closed laptops).
-ROOM_TTL_SECONDS: int      = 10 * 60   # 10 minutes
+ROOM_TTL_SECONDS: int         = 10 * 60
 CLEANUP_INTERVAL_SECONDS: int = 60
 
 # ── WebRTC / file-transfer chunk sizes ───────────────────────────────────────
-# Kept here for reference; the actual chunking lives in the frontend hook,
-# but documenting them alongside the backend constants is useful.
-CHUNK_SIZE: int   = 16 * 1024        # 16 KB per DataChannel message
-BUFFER_LIMIT: int =  1 * 1024 * 1024 # pause sending above 1 MB buffered
+CHUNK_SIZE: int   = 16 * 1024
+BUFFER_LIMIT: int =  1 * 1024 * 1024
