@@ -527,7 +527,7 @@ sudo systemctl status docker
 
   ## What's not built yet
 
-* **Simplify setup and development workflow — While the application is fully containerized, the current development setup still requires several manual steps and environment-specific considerations (WSL2, Docker capabilities, profiles, etc.). Reducing this complexity is the next priority before expanding functionality.**
+* **Simplify setup and development workflow** — While the application is fully containerized, the current development setup still requires several manual steps and environment-specific considerations (WSL2, Docker capabilities, profiles, etc.). Reducing this complexity is the next priority before expanding functionality.
 * **Backend WebSocket origin check is too strict** — currently only accepts `localhost` as a valid origin, rejecting the functionally-identical `127.0.0.1` and causing a misleading "backend not running" error. Should accept both.
 * **Deployment** — The app runs on localhost + ngrok (or Docker on localhost) for now. Deploying to a VPS (DigitalOcean, Linode, etc.) would make it publicly accessible without ngrok and would allow traces to originate from the server instead of the local development machine.
 * **Self-hosted TURN server** — Currently using a free public TURN relay (openrelay.metered.ca). For production, a dedicated coturn instance on the same VPS would be more reliable and private.
