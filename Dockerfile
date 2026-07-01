@@ -50,6 +50,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       traceroute \
       curl \
+      libcap2-bin \
+ && setcap cap_net_raw+ep "$(readlink -f "$(command -v traceroute)")" \
+ && apt-get purge -y libcap2-bin \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

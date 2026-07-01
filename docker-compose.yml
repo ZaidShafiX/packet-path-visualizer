@@ -30,6 +30,9 @@ services:
     image: packet-path-visualizer:latest
     container_name: ppv-app
     restart: unless-stopped
+    profiles: ["prod"]
+    cap_add:
+      - NET_RAW
     ports:
       - "${PORT:-8000}:8000"
     volumes:
@@ -48,7 +51,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-    profiles: [""]          # belongs to the default (no-profile) group
     networks:
       - ppv-net
 
@@ -63,6 +65,8 @@ services:
     image: packet-path-visualizer:dev
     container_name: ppv-backend-dev
     restart: unless-stopped
+    cap_add:
+      - NET_RAW
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -70,8 +74,12 @@ services:
       - ./backend:/app/backend:ro
       # GeoIP DB (read-only).
       - ./backend/GeoLite2-City.mmdb:/app/backend/GeoLite2-City.mmdb:ro
-      # Writable log dir.
-      - ./logs:/app/logs
+      # NOTE: logs are intentionally NOT bind-mounted here. A host bind mount
+      # brings host-owned permissions that won't match the image's `ppv`
+      # system-user UID, and core/logging.py opens its FileHandler at import
+      # time — so a write failure crashes the container on startup rather
+      # than just silently dropping logs. Logs stay inside the container;
+      # `docker compose logs backend-dev` or `docker cp` to inspect them.
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
@@ -87,8 +95,12 @@ services:
       - /app/backend
       - --log-level
       - debug
+    # Points at /healthz (add this route to main.py — see note below) instead
+    # of /api/cables, which makes a live outbound call to submarinecablemap.com
+    # on first hit. frontend-dev waits on this via depends_on/service_healthy,
+    # so a slow/blocked third party would stall the entire dev stack.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/cables"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 20s
       timeout: 5s
       retries: 3

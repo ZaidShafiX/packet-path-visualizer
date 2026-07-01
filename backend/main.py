@@ -71,6 +71,10 @@ app.include_router(trace.router)
 app.include_router(signal.router)
 app.include_router(cables.router)
 
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
 
 # ── Static files + SPA fallback ───────────────────────────────────────────────
 app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")

@@ -12,4 +12,5 @@ frontend/dist/
 
 repomix-output.xml
 
-logs/*.log
+logs/*
+!logs/.gitkeep
